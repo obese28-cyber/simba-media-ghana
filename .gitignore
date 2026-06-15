@@ -1,23 +1,18 @@
-# Dependencies
-frontend/node_modules/
-
-# Build output
-frontend/dist/
-
-# Database (never commit live data)
+# Database (never commit real data)
 backend/database/*.db
-backend/database/*.db-wal
 backend/database/*.db-shm
+backend/database/*.db-wal
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
-
-# Environment
 .env
-*.env
+
+# Node
+frontend/node_modules/
 
 # OS
 .DS_Store
 Thumbs.db
+*.fuse_hidden*

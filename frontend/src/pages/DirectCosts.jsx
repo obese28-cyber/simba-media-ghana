@@ -133,4 +133,22 @@ export default function DirectCosts() {
                 </td>
               </tr>
             ))}
-          </tbody
+          </tbody>
+          {rows.length > 0 && (
+            <tfoot>
+              <tr style={{ background: '#fff3e0', fontWeight: 700, borderTop: '2px solid #fed7aa' }}>
+                <td colSpan={5} style={{ padding: '10px 14px', color: BRAND }}>TOTAL</td>
+                <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626', fontSize: 14 }}>{fmt(total)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  )
+}
+
+const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.4px' }
+const inp = { width: '100%', padding: '8px 10px', border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 13, background: '#fafafa' }
+const actBtn = (color) => ({ marginRight: 6, padding: '4px 12px', fontSize: 12, fontWeight: 600, border: 'none', borderRadius: 6, background: color + '18', color, cursor: 'pointer' })

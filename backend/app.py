@@ -510,5 +510,25 @@ def get_monthly_summary():
     conn.close()
     return jsonify(result)
 
+@app.route('/api/vendor-balances', methods=['GET'])
+@require_auth
+def vendor_balances():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT v.id, v.name, v.service_type,
+            COALESCE((SELECT SUM(amount) FROM direct_costs WHERE vendor_id=v.id), 0) as direct_costs_total,
+            COALESCE((SELECT SUM(amount) FROM expenses WHERE vendor_id=v.id), 0) as expenses_total
+        FROM vendors v
+        ORDER BY (COALESCE((SELECT SUM(amount) FROM direct_costs WHERE vendor_id=v.id), 0) +
+                  COALESCE((SELECT SUM(amount) FROM expenses WHERE vendor_id=v.id), 0)) DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([{
+        'id': r['id'], 'name': r['name'], 'service_type': r['service_type'],
+        'direct_costs': r['direct_costs_total'],
+        'expenses': r['expenses_total'],
+        'total': r['direct_costs_total'] + r['expenses_total']
+    } for r in rows])
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=False)

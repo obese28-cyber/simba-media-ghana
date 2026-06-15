@@ -39,7 +39,6 @@ export default function Login({ onLogin }) {
         background: '#fff', borderRadius: 20, padding: '48px 44px', width: 420,
         boxShadow: '0 24px 64px rgba(10,61,98,0.35)'
       }}>
-        {/* Logo / Brand */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <img src="/logo.jpg" alt="Simba Media" style={{ width: 64, height: 64, borderRadius: 12, objectFit: 'cover', marginBottom: 14 }} />
           <h1 style={{ fontSize: 20, fontWeight: 900, color: BRAND, margin: 0 }}>Simba Media Ghana</h1>
@@ -84,7 +83,7 @@ export default function Login({ onLogin }) {
         </form>
 
         <p style={{ textAlign: 'center', fontSize: 11, color: '#94a3b8', marginTop: 28 }}>
-          © {new Date().getFullYear()} Simba Media Ghana Limited
+          2025 Simba Media Ghana Limited
         </p>
       </div>
     </div>

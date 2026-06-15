@@ -11,6 +11,7 @@ import Payments from './pages/Payments'
 import PnL from './pages/PnL'
 import BalanceSheet from './pages/BalanceSheet'
 import FixedAssets from './pages/FixedAssets'
+import CashBook from './pages/CashBook'
 
 const BRAND  = '#0a3d62'
 const ACCENT = '#f9a825'
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { to: '/payments',      label: 'Payments',       icon: '💳' },
   { to: '/pnl',           label: 'P&L Statement',  icon: '📈' },
   { to: '/balance-sheet', label: 'Balance Sheet',  icon: '⚖️' },
+  { to: '/cashbook',      label: 'Cash Book',      icon: '📒' },
 ]
 
 function Sidebar({ onLogout }) {
@@ -57,7 +59,6 @@ function Sidebar({ onLogout }) {
         ))}
       </nav>
 
-      {/* Logout */}
       <div style={{ padding: '12px 8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
         <button onClick={onLogout} style={{
           width: '100%', padding: '9px 12px', background: 'rgba(255,255,255,0.08)',
@@ -80,19 +81,20 @@ function Sidebar({ onLogout }) {
 export default function App() {
   const [authed, setAuthed] = useState(!!getToken())
 
+  const handleLogin  = () => setAuthed(true)
   const handleLogout = async () => {
     await apiFetch('/api/logout', { method: 'POST' })
     clearToken()
     setAuthed(false)
   }
 
-  if (!authed) return <Login onLogin={() => setAuthed(true)} />
+  if (!authed) return <Login onLogin={handleLogin} />
 
   return (
     <BrowserRouter>
-      <div style={{ display: 'flex' }}>
+      <div style={{ display: 'flex', minHeight: '100vh', background: '#f0f4f8' }}>
         <Sidebar onLogout={handleLogout} />
-        <main style={{ marginLeft: 230, flex: 1, minHeight: '100vh', padding: '28px 32px' }}>
+        <main style={{ marginLeft: 230, flex: 1, padding: '28px 32px', minWidth: 0 }}>
           <Routes>
             <Route path="/"              element={<Dashboard />} />
             <Route path="/revenue"       element={<Revenue />} />
@@ -103,6 +105,7 @@ export default function App() {
             <Route path="/payments"      element={<Payments />} />
             <Route path="/pnl"           element={<PnL />} />
             <Route path="/balance-sheet" element={<BalanceSheet />} />
+            <Route path="/cashbook"      element={<CashBook />} />
           </Routes>
         </main>
       </div>
