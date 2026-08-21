@@ -1,172 +1,418 @@
-import { apiFetch } from '../auth'
-import { useEffect, useState } from 'react'
-import { fmt, MONTHS, YEARS, CURRENT_YEAR, CURRENT_MONTH, BRAND, ACCENT, EXPENSE_CATS } from '../utils'
+import { apiFetch } from '../auth';
+import { useEffect, useState } from 'react';
+import { fmt, MONTHS, YEARS, CURRENT_YEAR, CURRENT_MONTH, BRAND, ACCENT, EXPENSE_CATS } from '../utils';
 
-const BLANK = { year: CURRENT_YEAR, month: CURRENT_MONTH, category: EXPENSE_CATS[0], description: '', vendor_id: '', amount: '' }
+const PER_PAGE = 20;
 
 export default function Expenses() {
-  const [rows, setRows]           = useState([])
-  const [vendors, setVendors]     = useState([])
-  const [filterYear, setFilterYear]   = useState(CURRENT_YEAR)
-  const [filterMonth, setFilterMonth] = useState('')
-  const [form, setForm]           = useState(BLANK)
-  const [editId, setEditId]       = useState(null)
-  const [showForm, setShowForm]   = useState(false)
+  var [rows, setRows]               = useState([]);
+  var [filterYear, setFilterYear]   = useState(CURRENT_YEAR);
+  var [filterMonth, setFilterMonth] = useState(0);
+  var [filterCat, setFilterCat]     = useState('');
+  var [sortCol, setSortCol]         = useState('month');
+  var [sortDir, setSortDir]         = useState('desc');
+  var [page, setPage]               = useState(1);
+  var [showForm, setShowForm]       = useState(false);
+  var [editRow, setEditRow]         = useState(null);
+  var [form, setForm]               = useState(blank());
+  var [saving, setSaving]           = useState(false);
 
-  const load = () => {
-    let url = `/api/expenses?year=${filterYear}`
-    if (filterMonth) url += `&month=${filterMonth}`
-    apiFetch(url).then(r => r.json()).then(setRows)
-  }
-  useEffect(() => { load() }, [filterYear, filterMonth])
-  useEffect(() => { apiFetch('/api/vendors').then(r => r.json()).then(setVendors) }, [])
-
-  const save = async () => {
-    const amt = parseFloat(form.amount)
-    if (!amt || !form.category) return
-    const url    = editId ? `/api/expenses/${editId}` : '/api/expenses'
-    const method = editId ? 'PUT' : 'POST'
-    await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, amount: amt, vendor_id: form.vendor_id || null }) })
-    setForm(BLANK); setEditId(null); setShowForm(false); load()
+  function blank() {
+    return { year: CURRENT_YEAR, month: CURRENT_MONTH, category: EXPENSE_CATS[0], description: '', amount: '', payment_method: '' };
   }
 
-  const del  = async (id) => { if (!confirm('Delete?')) return; await apiFetch(`/api/expenses/${id}`, { method: 'DELETE' }); load() }
-  const edit = (r) => { setForm({ year: r.year, month: r.month, category: r.category, description: r.description || '', vendor_id: r.vendor_id || '', amount: r.amount }); setEditId(r.id); setShowForm(true) }
+  var load = function() {
+    apiFetch('/api/expenses?year=' + filterYear).then(function(r) { return r.json(); }).then(function(data) {
+      setRows(data); setPage(1);
+    });
+  };
 
-  const total = rows.reduce((s, r) => s + r.amount, 0)
+  useEffect(function() { load(); }, [filterYear]);
 
-  const catTotals = EXPENSE_CATS.map(cat => ({
-    cat, amount: rows.filter(r => r.category === cat).reduce((s, r) => s + r.amount, 0)
-  })).filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount)
-  const maxCat = catTotals[0]?.amount || 1
+  function toggleSort(col) {
+    if (sortCol === col) {
+      setSortDir(function(d) { return d === 'asc' ? 'desc' : 'asc'; });
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+    setPage(1);
+  }
+
+  var base     = filterMonth ? rows.filter(function(r) { return r.month === filterMonth; }) : rows;
+  var filtered = filterCat   ? base.filter(function(r) { return r.category === filterCat; }) : base;
+
+  var sorted = filtered.slice().sort(function(a, b) {
+    var av, bv;
+    if      (sortCol === 'month') { av = a.year * 100 + a.month;        bv = b.year * 100 + b.month; }
+    else if (sortCol === 'cat')   { av = a.category.toLowerCase();       bv = b.category.toLowerCase(); }
+    else if (sortCol === 'amt')   { av = a.amount;                       bv = b.amount; }
+    else if (sortCol === 'desc')  { av = (a.description||'').toLowerCase(); bv = (b.description||'').toLowerCase(); }
+    else                          { av = a.month; bv = b.month; }
+    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+    if (av > bv) return sortDir === 'asc' ?  1 : -1;
+    return 0;
+  });
+
+  var total      = filtered.reduce(function(s, r) { return s + r.amount; }, 0);
+  var totalPages = Math.ceil(sorted.length / PER_PAGE);
+  var paged      = sorted.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+
+  var byCat = EXPENSE_CATS
+    .map(function(cat) {
+      return { cat: cat, amount: filtered.filter(function(r) { return r.category === cat; }).reduce(function(s, r) { return s + r.amount; }, 0) };
+    })
+    .filter(function(c) { return c.amount > 0; })
+    .sort(function(a, b) { return b.amount - a.amount; });
+
+  var byMonth = MONTHS
+    .map(function(name, i) {
+      return { name: name, month: i + 1, amount: rows.filter(function(r) { return r.month === i + 1; }).reduce(function(s, r) { return s + r.amount; }, 0) };
+    })
+    .filter(function(m) { return m.amount > 0; });
+
+  var maxCat   = byCat[0] ? byCat[0].amount : 1;
+  var maxMonth = Math.max.apply(null, byMonth.map(function(m) { return m.amount; }).concat([1]));
+
+  var openAdd  = function() { setEditRow(null); setForm(blank()); setShowForm(true); };
+  var openEdit = function(r) {
+    setEditRow(r);
+    setForm({ year: r.year, month: r.month, category: r.category, description: r.description || '', amount: r.amount, payment_method: r.payment_method || '' });
+    setShowForm(true);
+  };
+
+  var handleDelete = async function(id) {
+    if (!window.confirm('Delete this expense entry?')) return;
+    await apiFetch('/api/expenses/' + id, { method: 'DELETE' });
+    load();
+  };
+
+  var handleSave = async function() {
+    if (!form.amount || isNaN(+form.amount)) return;
+    setSaving(true);
+    var body = JSON.stringify(Object.assign({}, form, { amount: +form.amount }));
+    var hdrs = { 'Content-Type': 'application/json' };
+    if (editRow) await apiFetch('/api/expenses/' + editRow.id, { method: 'PUT',  headers: hdrs, body: body });
+    else         await apiFetch('/api/expenses',                { method: 'POST', headers: hdrs, body: body });
+    setSaving(false); setShowForm(false); load();
+  };
+
+  var goPage = function(p) { setPage(Math.max(1, Math.min(totalPages, p))); };
+
+  function SortTh(props) {
+    var col = props.col; var children = props.children; var right = props.right; var wide = props.wide;
+    var active = sortCol === col;
+    return (
+      <th onClick={function() { toggleSort(col); }} style={{
+        padding: '10px 12px', textAlign: right ? 'right' : 'left',
+        fontWeight: 600, fontSize: 11, letterSpacing: '0.3px', whiteSpace: 'nowrap',
+        cursor: 'pointer', userSelect: 'none',
+        background: active ? 'rgba(255,255,255,0.12)' : 'transparent',
+        width: wide ? '28%' : undefined,
+      }}>
+        {children}
+        <span style={{ marginLeft: 4, opacity: active ? 1 : 0.35, fontSize: 10 }}>
+          {active ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+        </span>
+      </th>
+    );
+  }
+
+  function pmBadge(pm) {
+    if (!pm) return null;
+    var bg    = pm === 'Cash' ? '#dcfce7' : pm === 'MTN Momo' ? '#fef9c3' : '#dbeafe';
+    var color = pm === 'Cash' ? '#166534' : pm === 'MTN Momo' ? '#713f12' : '#1d4ed8';
+    return (
+      <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap', background: bg, color: color }}>
+        {pm}
+      </span>
+    );
+  }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20, alignItems: 'start' }}>
+    <div style={{ fontFamily: "'Inter', sans-serif", color: '#1e293b' }}>
 
-      {/* LEFT */}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: BRAND }}>Admin / Overhead Expenses</h1>
-          <button onClick={() => { setForm(BLANK); setEditId(null); setShowForm(true) }}
-            style={{ padding: '9px 20px', background: BRAND, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 14 }}>
-            + Add Expense
-          </button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: BRAND, margin: 0 }}>Admin / Overhead Expenses</h1>
+          <p style={{ fontSize: 13, color: '#64748b', margin: '3px 0 0' }}>Track all overhead expenditure for {filterYear}</p>
+        </div>
+        <button onClick={openAdd} style={primaryBtn}>+ Add Expense</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 270px', gap: 22 }}>
+
+        <div>
+          {/* KPI cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 18 }}>
+            <Card label="Total Expenditure" value={fmt(total)} hi />
+            <Card label="Transactions"      value={filtered.length} />
+            <Card label="Avg per Entry"     value={filtered.length ? fmt(total / filtered.length) : 'GHS 0.00'} />
+          </div>
+
+          {/* Filter bar */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
+            <select style={sel} value={filterYear} onChange={function(e) { setFilterYear(+e.target.value); setPage(1); }}>
+              {YEARS.map(function(y) { return <option key={y} value={y}>{y}</option>; })}
+            </select>
+            <select style={sel} value={filterMonth} onChange={function(e) { setFilterMonth(+e.target.value); setPage(1); }}>
+              <option value={0}>All Months</option>
+              {MONTHS.map(function(m, i) { return <option key={i} value={i + 1}>{m}</option>; })}
+            </select>
+            <select style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 500, maxWidth: 180 }} value={filterCat} onChange={function(e) { setFilterCat(e.target.value); setPage(1); }}>
+              <option value="">All Categories</option>
+              {EXPENSE_CATS.map(function(c) { return <option key={c} value={c}>{c}</option>; })}
+            </select>
+            {filterCat && (
+              <button onClick={function() { setFilterCat(''); setPage(1); }} style={{ padding: '7px 12px', background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                x Clear
+              </button>
+            )}
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#94a3b8' }}>
+              {sorted.length} {sorted.length === 1 ? 'entry' : 'entries'}
+              {totalPages > 1 ? ' - page ' + page + '/' + totalPages : ''}
+            </span>
+          </div>
+
+          {/* Table */}
+          <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ background: BRAND, color: '#fff' }}>
+                  <SortTh col="month">Month</SortTh>
+                  <SortTh col="cat">Category</SortTh>
+                  <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>Vendor</th>
+                  <SortTh col="desc" wide>Description</SortTh>
+                  <SortTh col="amt" right>Amount</SortTh>
+                  <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>Payment</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 600, fontSize: 11 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paged.length === 0 ? (
+                  <tr><td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>No expenses found</td></tr>
+                ) : paged.map(function(r, i) {
+                  return (
+                    <tr key={r.id} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? '#fff' : '#fafbfc' }}>
+                      <td style={td}><span style={{ whiteSpace: 'nowrap' }}>{MONTHS[r.month - 1].slice(0, 3)} {r.year}</span></td>
+                      <td style={td}>
+                        <span onClick={function() { setFilterCat(r.category); setPage(1); }}
+                          style={{ background: '#eff6ff', color: '#1d4ed8', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer' }}
+                          title={'Filter by ' + r.category}>
+                          {r.category}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 12px', color: '#94a3b8' }}>{r.vendor_name || '—'}</td>
+                      <td style={{ padding: '10px 12px', color: '#374151', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.description || ''}>
+                        {r.description || <span style={{ color: '#cbd5e1' }}>—</span>}
+                      </td>
+                      <td style={{ padding: '10px 12px', color: '#374151', textAlign: 'right', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{fmt(r.amount)}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                        {r.payment_method ? pmBadge(r.payment_method) : <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <button onClick={function() { openEdit(r); }} style={editBtn}>Edit</button>
+                        <button onClick={function() { handleDelete(r.id); }} style={delBtn}>Del</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {paged.length > 0 && (
+                <tfoot>
+                  <tr style={{ background: '#f0f4f8' }}>
+                    <td colSpan={5} style={{ padding: '10px 12px', color: '#374151', fontWeight: 800, color: BRAND, fontSize: 12 }}>
+                      {filterCat ? filterCat + ' - ' : ''}{filterMonth ? MONTHS[filterMonth - 1] + ' ' : ''}{filterYear} TOTAL
+                    </td>
+                    <td style={{ padding: '10px 12px', color: '#374151', textAlign: 'right', fontWeight: 800, color: BRAND, whiteSpace: 'nowrap' }}>{fmt(total)}</td>
+                    <td style={{ padding: '10px 12px', color: '#374151' }} />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 5, marginTop: 16, flexWrap: 'wrap' }}>
+              <PgBtn onClick={function() { goPage(1); }}          disabled={page === 1}>First</PgBtn>
+              <PgBtn onClick={function() { goPage(page - 1); }}   disabled={page === 1}>Prev</PgBtn>
+              {pageNums(page, totalPages).map(function(p, i) {
+                return p === '...'
+                  ? <span key={'d' + i} style={{ padding: '0 4px', color: '#94a3b8' }}>...</span>
+                  : <PgBtn key={p} onClick={function() { goPage(p); }} active={p === page}>{p}</PgBtn>;
+              })}
+              <PgBtn onClick={function() { goPage(page + 1); }}   disabled={page === totalPages}>Next</PgBtn>
+              <PgBtn onClick={function() { goPage(totalPages); }} disabled={page === totalPages}>Last</PgBtn>
+            </div>
+          )}
         </div>
 
-        {showForm && (
-          <div style={{ background: '#fff', borderRadius: 12, padding: '20px 24px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: 24, border: `2px solid ${BRAND}` }}>
-            <div style={{ fontWeight: 700, color: BRAND, marginBottom: 16, fontSize: 15 }}>{editId ? 'Edit Expense' : 'New Expense'}</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 2fr 1.5fr', gap: 12, alignItems: 'end' }}>
-              <div><label style={lbl}>Year</label>
-                <select value={form.year} onChange={e => setForm(f => ({ ...f, year: +e.target.value }))} style={inp}>
-                  {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-                </select></div>
-              <div><label style={lbl}>Month</label>
-                <select value={form.month} onChange={e => setForm(f => ({ ...f, month: +e.target.value }))} style={inp}>
-                  {MONTHS.map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
-                </select></div>
-              <div><label style={lbl}>Category</label>
-                <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} style={inp}>
-                  {EXPENSE_CATS.map(c => <option key={c}>{c}</option>)}
-                </select></div>
-              <div><label style={lbl}>Vendor (opt)</label>
-                <select value={form.vendor_id} onChange={e => setForm(f => ({ ...f, vendor_id: e.target.value }))} style={inp}>
-                  <option value="">— None —</option>
-                  {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select></div>
-              <div><label style={lbl}>Description</label>
-                <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Details…" style={inp} /></div>
-              <div><label style={lbl}>Amount (GHS)</label>
-                <input type="number" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" style={inp} /></div>
+        {/* Right panel */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ background: BRAND, borderRadius: 12, padding: '20px 18px', color: '#fff' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.6px', opacity: 0.7, marginBottom: 6 }}>
+              {filterCat ? filterCat : filterMonth ? MONTHS[filterMonth - 1] : 'Annual'} Expenditure
             </div>
-            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-              <button onClick={save} style={{ padding: '9px 24px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13 }}>{editId ? 'Update' : 'Save'}</button>
-              <button onClick={() => { setShowForm(false); setEditId(null); setForm(BLANK) }} style={{ padding: '9px 18px', background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13 }}>Cancel</button>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(total)}</div>
+            <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{filtered.length} transactions</div>
+          </div>
+
+          {byCat.length > 0 && (
+            <Panel title="By Category">
+              {byCat.map(function(item) {
+                return (
+                  <div key={item.cat} style={{ marginBottom: 11 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                      <span onClick={function() { setFilterCat(item.cat); setPage(1); }}
+                        style={{ color: filterCat === item.cat ? BRAND : '#374151', fontWeight: filterCat === item.cat ? 700 : 500, flex: 1, marginRight: 6, cursor: 'pointer' }}>
+                        {item.cat}
+                      </span>
+                      <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{fmt(item.amount)}</span>
+                    </div>
+                    <div style={{ background: '#f1f5f9', borderRadius: 4, height: 5 }}>
+                      <div style={{ background: filterCat === item.cat ? ACCENT : BRAND, borderRadius: 4, height: 5, width: ((item.amount / maxCat) * 100) + '%' }} />
+                    </div>
+                  </div>
+                );
+              })}
+              {filterCat && (
+                <button onClick={function() { setFilterCat(''); setPage(1); }} style={{ marginTop: 4, fontSize: 11, color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                  x Clear filter
+                </button>
+              )}
+            </Panel>
+          )}
+
+          {byMonth.length > 0 && (
+            <Panel title="By Month">
+              {byMonth.map(function(item) {
+                return (
+                  <div key={item.month} style={{ marginBottom: 11 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                      <span style={{ color: '#374151', fontWeight: 500 }}>{item.name}</span>
+                      <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{fmt(item.amount)}</span>
+                    </div>
+                    <div style={{ background: '#f1f5f9', borderRadius: 4, height: 5 }}>
+                      <div style={{ background: ACCENT, borderRadius: 4, height: 5, width: ((item.amount / maxMonth) * 100) + '%' }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </Panel>
+          )}
+        </div>
+      </div>
+
+      {/* Modal */}
+      {showForm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,39,68,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={function(e) { if (e.target === e.currentTarget) setShowForm(false); }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: '100%', maxWidth: 480, boxShadow: '0 24px 64px rgba(0,0,0,0.22)' }}>
+            <h3 style={{ margin: '0 0 20px', color: BRAND, fontWeight: 800, fontSize: 17 }}>
+              {editRow ? 'Edit Expense' : 'New Expense'}
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={lbl}>Year</label>
+                <select style={inp} value={form.year} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { year: +e.target.value }); }); }}>
+                  {YEARS.map(function(y) { return <option key={y} value={y}>{y}</option>; })}
+                </select>
+              </div>
+              <div>
+                <label style={lbl}>Month</label>
+                <select style={inp} value={form.month} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { month: +e.target.value }); }); }}>
+                  {MONTHS.map(function(m, i) { return <option key={i} value={i + 1}>{m}</option>; })}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={lbl}>Category</label>
+              <select style={inp} value={form.category} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { category: e.target.value }); }); }}>
+                {EXPENSE_CATS.map(function(c) { return <option key={c} value={c}>{c}</option>; })}
+              </select>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={lbl}>Description</label>
+              <input style={inp} value={form.description} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { description: e.target.value }); }); }} placeholder="What was this for?" />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={lbl}>Amount (GHS)</label>
+              <input style={inp} type="number" min="0" step="0.01" value={form.amount} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { amount: e.target.value }); }); }} placeholder="0.00" />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={lbl}>Payment Method</label>
+              <select style={inp} value={form.payment_method} onChange={function(e) { setForm(function(f) { return Object.assign({}, f, { payment_method: e.target.value }); }); }}>
+                <option value="">-- Select --</option>
+                <option value="Cash">Cash</option>
+                <option value="Zenith Bank">Zenith Bank</option>
+                <option value="MTN Momo">MTN Momo</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 22 }}>
+              <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: '11px', background: BRAND, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer', fontSize: 14 }}>
+                {saving ? 'Saving...' : editRow ? 'Update Expense' : 'Add Expense'}
+              </button>
+              <button onClick={function() { setShowForm(false); }} style={{ padding: '11px 20px', background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer' }}>
+                Cancel
+              </button>
             </div>
           </div>
-        )}
-
-        <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-          <select value={filterYear} onChange={e => setFilterYear(+e.target.value)} style={{ ...inp, width: 'auto' }}>
-            {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
-          <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} style={{ ...inp, width: 'auto' }}>
-            <option value="">All Months</option>
-            {MONTHS.map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
-          </select>
         </div>
-
-        <div style={{ background: '#fff', borderRadius: 14, boxShadow: '0 1px 8px rgba(0,0,0,0.07)', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: BRAND, color: '#fff' }}>
-                {['Month/Year','Category','Vendor','Description','Amount','Actions'].map(h => (
-                  <th key={h} style={{ padding: '10px 14px', textAlign: h==='Amount'?'right':'left', fontWeight: 600, fontSize: 12 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No entries for this period.</td></tr>}
-              {rows.map((r, i) => (
-                <tr key={r.id} style={{ background: i%2===0?'#fff':'#f8fafc', borderBottom: '1px solid #f1f5f9' }}>
-                  <td style={{ padding: '9px 14px' }}>{MONTHS[r.month-1]} {r.year}</td>
-                  <td style={{ padding: '9px 14px' }}><span style={{ background: '#fce4ec', color: '#880e4f', padding: '3px 8px', borderRadius: 6, fontSize: 12, fontWeight: 600 }}>{r.category}</span></td>
-                  <td style={{ padding: '9px 14px', color: '#475569' }}>{r.vendor_name || '—'}</td>
-                  <td style={{ padding: '9px 14px', color: '#475569' }}>{r.description}</td>
-                  <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>{fmt(r.amount)}</td>
-                  <td style={{ padding: '9px 14px' }}>
-                    <button onClick={() => edit(r)} style={actBtn('#2563eb')}>Edit</button>
-                    <button onClick={() => del(r.id)} style={actBtn('#dc2626')}>Del</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            {rows.length > 0 && (
-              <tfoot>
-                <tr style={{ background: '#fce4ec', fontWeight: 700, borderTop: '2px solid #f9a8d4' }}>
-                  <td colSpan={4} style={{ padding: '10px 14px', color: BRAND }}>TOTAL</td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626', fontSize: 14 }}>{fmt(total)}</td>
-                  <td />
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        </div>
-      </div>
-
-      {/* RIGHT — summary panel */}
-      <div style={{ position: 'sticky', top: 20 }}>
-        <div style={{ background: BRAND, borderRadius: 14, padding: '20px', marginBottom: 14, boxShadow: '0 4px 20px rgba(10,61,98,0.2)' }}>
-          <p style={{ fontSize: 10, fontWeight: 700, color: ACCENT, textTransform: 'uppercase', letterSpacing: '1.5px', margin: '0 0 10px' }}>
-            {filterMonth ? `${MONTHS[filterMonth-1]} ${filterYear}` : `Year ${filterYear}`}
-          </p>
-          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', margin: '0 0 4px' }}>Total Expenses</p>
-          <p style={{ fontSize: 26, fontWeight: 900, color: '#fff', margin: 0 }}>{fmt(total)}</p>
-          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>{rows.length} entries</p>
-        </div>
-
-        <div style={{ background: '#fff', borderRadius: 14, padding: '18px 20px', boxShadow: '0 1px 8px rgba(0,0,0,0.07)' }}>
-          <p style={{ fontSize: 11, fontWeight: 800, color: BRAND, textTransform: 'uppercase', letterSpacing: '0.8px', margin: '0 0 16px' }}>By Category</p>
-          {catTotals.length === 0 && <p style={{ color: '#94a3b8', fontSize: 13, margin: 0 }}>No data yet</p>}
-          {catTotals.map(({ cat, amount }) => (
-            <div key={cat} style={{ marginBottom: 14 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>{cat}</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#dc2626' }}>{fmt(amount)}</span>
-              </div>
-              <div style={{ height: 6, background: '#f1f5f9', borderRadius: 3 }}>
-                <div style={{ height: '100%', width: `${(amount/maxCat)*100}%`, background: BRAND, borderRadius: 3 }} />
-              </div>
-              <span style={{ fontSize: 10, color: '#94a3b8' }}>{total > 0 ? ((amount/total)*100).toFixed(1) : 0}%</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
-  )
+  );
 }
 
-const lbl    = { display: 'block', fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.4px' }
-const inp    = { width: '100%', padding: '8px 10px', border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 13, background: '#fafafa' }
-const actBtn = (color) => ({ marginRight: 6, padding: '4px 12px', fontSize: 12, fontWeight: 600, border: 'none', borderRadius: 6, background: color+'18', color, cursor: 'pointer' })
+function pageNums(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, function(_, i) { return i + 1; });
+  var pages = new Set([1, total, cur, cur - 1, cur + 1].filter(function(p) { return p >= 1 && p <= total; }));
+  var srt = Array.from(pages).sort(function(a, b) { return a - b; });
+  var result = [];
+  srt.forEach(function(p, i) {
+    if (i > 0 && p - srt[i - 1] > 1) result.push('...');
+    result.push(p);
+  });
+  return result;
+}
+
+function Card(props) {
+  var label = props.label; var value = props.value; var hi = props.hi;
+  return (
+    <div style={{ background: hi ? BRAND : '#fff', padding: '16px 18px', borderRadius: 12, border: hi ? 'none' : '1px solid #e2e8f0', boxShadow: '0 2px 6px rgba(0,0,0,0.04)' }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: hi ? 'rgba(255,255,255,0.65)' : '#64748b', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: '1.3rem', fontWeight: 800, color: hi ? '#fff' : '#0f172a' }}>{value}</div>
+    </div>
+  );
+}
+
+function Panel(props) {
+  return (
+    <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '16px 18px', boxShadow: '0 2px 6px rgba(0,0,0,0.04)' }}>
+      <div style={{ fontWeight: 700, fontSize: 11, color: BRAND, marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.6px' }}>{props.title}</div>
+      {props.children}
+    </div>
+  );
+}
+
+function PgBtn(props) {
+  var children = props.children; var onClick = props.onClick; var disabled = props.disabled; var active = props.active;
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding: '5px 11px', minWidth: 36,
+      background: active ? BRAND : disabled ? '#f8fafc' : '#fff',
+      color:      active ? '#fff' : disabled ? '#cbd5e1' : '#374151',
+      border:     '1px solid ' + (active ? BRAND : '#e2e8f0'),
+      borderRadius: 6, fontSize: 12, fontWeight: active ? 700 : 500,
+      cursor: disabled ? 'default' : 'pointer',
+    }}>{children}</button>
+  );
+}
+
+var td  = { padding: '10px 12px', color: '#374151' };
+var sel = { padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 500 };
+var inp = { width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit' };
+var primaryBtn = { padding: '10px 20px', background: BRAND, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 };
+var editBtn = { padding: '4px 10px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', marginRight: 4 };
+var delBtn  = { padding: '4px 10px', background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer' };
+var lbl = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 5 };

@@ -16,3 +16,19 @@ frontend/node_modules/
 .DS_Store
 Thumbs.db
 *.fuse_hidden*
+# --- added automatically by backup-to-github.ps1 ---
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+dist/
+build/
+.next/
+.turbo/
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.local

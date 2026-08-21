@@ -140,12 +140,31 @@ def init_db():
         )
     """)
 
+    # Taxes
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS taxes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            description TEXT,
+            amount REAL NOT NULL DEFAULT 0,
+            paye_expense_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     conn.commit()
 
     # Migrations — add columns to existing tables if missing
-    existing = [r[1] for r in cur.execute("PRAGMA table_info(direct_costs)").fetchall()]
-    if 'payment_method' not in existing:
+    existing_dc = [r[1] for r in cur.execute("PRAGMA table_info(direct_costs)").fetchall()]
+    if 'payment_method' not in existing_dc:
         cur.execute("ALTER TABLE direct_costs ADD COLUMN payment_method TEXT DEFAULT ''")
+
+    existing_ex = [r[1] for r in cur.execute("PRAGMA table_info(expenses)").fetchall()]
+    if 'payment_method' not in existing_ex:
+        cur.execute("ALTER TABLE expenses ADD COLUMN payment_method TEXT DEFAULT ''")
+
     conn.commit()
     conn.close()
 
@@ -284,8 +303,8 @@ def add_expense():
     d = request.json
     conn = get_db()
     conn.execute(
-        "INSERT INTO expenses (year,month,category,description,vendor_id,amount) VALUES (?,?,?,?,?,?)",
-        (d['year'], d['month'], d['category'], d.get('description',''), d.get('vendor_id'), d['amount'])
+        "INSERT INTO expenses (year,month,category,description,vendor_id,amount,payment_method) VALUES (?,?,?,?,?,?,?)",
+        (d['year'], d['month'], d['category'], d.get('description',''), d.get('vendor_id'), d['amount'], d.get('payment_method',''))
     )
     conn.commit()
     conn.close()
@@ -297,8 +316,8 @@ def update_expense(eid):
     d = request.json
     conn = get_db()
     conn.execute(
-        "UPDATE expenses SET year=?,month=?,category=?,description=?,vendor_id=?,amount=? WHERE id=?",
-        (d['year'], d['month'], d['category'], d.get('description',''), d.get('vendor_id'), d['amount'], eid)
+        "UPDATE expenses SET year=?,month=?,category=?,description=?,vendor_id=?,amount=?,payment_method=? WHERE id=?",
+        (d['year'], d['month'], d['category'], d.get('description',''), d.get('vendor_id'), d['amount'], d.get('payment_method',''), eid)
     )
     conn.commit()
     conn.close()
@@ -454,6 +473,75 @@ def delete_payment(pid):
     conn.close()
     return jsonify({'ok': True})
 
+# ─────────────────────────── TAXES ──────────────────────────────────────────
+REVENUE_TAX_CATS = {'CST', 'VAT', 'NHIL', 'Withholding'}
+
+@app.route('/api/taxes', methods=['GET'])
+@require_auth
+def get_taxes():
+    year = request.args.get('year', type=int)
+    month = request.args.get('month', type=int)
+    conn = get_db()
+    q = "SELECT * FROM taxes WHERE 1=1"
+    params = []
+    if year: q += " AND year=?"; params.append(year)
+    if month: q += " AND month=?"; params.append(month)
+    q += " ORDER BY year DESC, month DESC, id DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/taxes', methods=['POST'])
+@require_auth
+def add_tax():
+    d = request.json
+    conn = get_db()
+    paye_expense_id = None
+    if d['category'] == 'PAYE':
+        cur = conn.execute(
+            "INSERT INTO expenses (year,month,category,description,amount) VALUES (?,?,?,?,?)",
+            (d['year'], d['month'], 'Staff Cost', f"PAYE - {d.get('description','')}", d['amount'])
+        )
+        paye_expense_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO taxes (year,month,category,description,amount,paye_expense_id) VALUES (?,?,?,?,?,?)",
+        (d['year'], d['month'], d['category'], d.get('description',''), d['amount'], paye_expense_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True}), 201
+
+@app.route('/api/taxes/<int:tid>', methods=['PUT'])
+@require_auth
+def update_tax(tid):
+    d = request.json
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM taxes WHERE id=?", (tid,)).fetchone()
+    if existing and existing['paye_expense_id']:
+        conn.execute(
+            "UPDATE expenses SET year=?,month=?,amount=?,description=? WHERE id=?",
+            (d['year'], d['month'], d['amount'], f"PAYE - {d.get('description','')}", existing['paye_expense_id'])
+        )
+    conn.execute(
+        "UPDATE taxes SET year=?,month=?,category=?,description=?,amount=? WHERE id=?",
+        (d['year'], d['month'], d['category'], d.get('description',''), d['amount'], tid)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+@app.route('/api/taxes/<int:tid>', methods=['DELETE'])
+@require_auth
+def delete_tax(tid):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM taxes WHERE id=?", (tid,)).fetchone()
+    if existing and existing['paye_expense_id']:
+        conn.execute("DELETE FROM expenses WHERE id=?", (existing['paye_expense_id'],))
+    conn.execute("DELETE FROM taxes WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
 # ─────────────────────────── SUMMARY / P&L ────────────────────────────────
 @app.route('/api/summary', methods=['GET'])
 @require_auth
@@ -474,16 +562,24 @@ def get_summary():
     total_direct = conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM direct_costs WHERE 1=1{year_filter}", params_filter).fetchone()[0]
     total_expenses = conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM expenses WHERE 1=1{year_filter}", params_filter).fetchone()[0]
     total_assets = conn.execute("SELECT COALESCE(SUM(cost),0) FROM fixed_assets").fetchone()[0]
+    revenue_taxes = conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM taxes WHERE category IN ('CST','VAT','NHIL','Withholding') AND 1=1{year_filter}", params_filter).fetchone()[0]
+    corporate_tax = conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM taxes WHERE category='Corporate Tax' AND 1=1{year_filter}", params_filter).fetchone()[0]
 
-    gross_profit = total_revenue - total_direct
-    net_profit = gross_profit - total_expenses
+    net_revenue = total_revenue - revenue_taxes
+    gross_profit = net_revenue - total_direct
+    operating_profit = gross_profit - total_expenses
+    net_profit = operating_profit - corporate_tax
 
     conn.close()
     return jsonify({
         'revenue': total_revenue,
+        'revenue_taxes': revenue_taxes,
+        'net_revenue': net_revenue,
         'direct_costs': total_direct,
         'gross_profit': gross_profit,
         'expenses': total_expenses,
+        'operating_profit': operating_profit,
+        'corporate_tax': corporate_tax,
         'net_profit': net_profit,
         'fixed_assets': total_assets,
     })
@@ -499,13 +595,22 @@ def get_monthly_summary():
         rev = conn.execute("SELECT COALESCE(SUM(amount),0) FROM revenue WHERE year=? AND month=?", (year, m)).fetchone()[0]
         dc = conn.execute("SELECT COALESCE(SUM(amount),0) FROM direct_costs WHERE year=? AND month=?", (year, m)).fetchone()[0]
         exp = conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE year=? AND month=?", (year, m)).fetchone()[0]
+        rev_tax = conn.execute("SELECT COALESCE(SUM(amount),0) FROM taxes WHERE category IN ('CST','VAT','NHIL','Withholding') AND year=? AND month=?", (year, m)).fetchone()[0]
+        corp_tax = conn.execute("SELECT COALESCE(SUM(amount),0) FROM taxes WHERE category='Corporate Tax' AND year=? AND month=?", (year, m)).fetchone()[0]
+        net_rev = rev - rev_tax
+        gross = net_rev - dc
+        operating = gross - exp
         result.append({
             'month': m,
             'revenue': rev,
+            'revenue_taxes': rev_tax,
+            'net_revenue': net_rev,
             'direct_costs': dc,
-            'gross_profit': rev - dc,
+            'gross_profit': gross,
             'expenses': exp,
-            'net_profit': rev - dc - exp,
+            'operating_profit': operating,
+            'corporate_tax': corp_tax,
+            'net_profit': operating - corp_tax,
         })
     conn.close()
     return jsonify(result)
@@ -529,6 +634,85 @@ def vendor_balances():
         'expenses': r['expenses_total'],
         'total': r['direct_costs_total'] + r['expenses_total']
     } for r in rows])
+
+@app.route('/api/cashbook-by-payment', methods=['GET'])
+@require_auth
+def cashbook_by_payment():
+    """
+    Returns per-month totals for each payment method across expenses + direct_costs.
+    Used by the Cash Book to split by Cash / Zenith Bank / MTN Momo.
+    """
+    year = request.args.get('year', type=int, default=datetime.now().year)
+    pm   = request.args.get('payment_method', '')   # filter to one account; empty = all
+    conn = get_db()
+    result = []
+    for m in range(1, 13):
+        pm_filter = " AND payment_method=?" if pm else ""
+        pm_params = [pm] if pm else []
+
+        exp_out = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE year=? AND month=?" + pm_filter,
+            [year, m] + pm_params
+        ).fetchone()[0]
+
+        dc_out = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM direct_costs WHERE year=? AND month=?" + pm_filter,
+            [year, m] + pm_params
+        ).fetchone()[0]
+
+        # Per-payment-method breakdown (expenses + dc separately)
+        pm_detail = {}
+        for p in ['Cash', 'Zenith Bank', 'MTN Momo']:
+            e = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE year=? AND month=? AND payment_method=?",
+                (year, m, p)
+            ).fetchone()[0]
+            d = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM direct_costs WHERE year=? AND month=? AND payment_method=?",
+                (year, m, p)
+            ).fetchone()[0]
+            pm_detail[p] = {'expenses': e, 'dc': d, 'total': e + d}
+
+        result.append({
+            'month':      m,
+            'pm_detail':  pm_detail,
+        })
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/cashbook-transactions', methods=['GET'])
+@require_auth
+def cashbook_transactions():
+    """Individual transactions per payment method for the ledger detail view."""
+    year = request.args.get('year', type=int, default=datetime.now().year)
+    pm   = request.args.get('payment_method', '')
+    conn = get_db()
+    pm_filter = " AND payment_method=?" if pm else ""
+    params    = [year] + ([pm] if pm else [])
+
+    expenses = conn.execute(
+        "SELECT month, category, description, amount FROM expenses "
+        "WHERE year=?" + pm_filter + " ORDER BY month, id",
+        params
+    ).fetchall()
+
+    dc = conn.execute(
+        "SELECT month, category, description, amount FROM direct_costs "
+        "WHERE year=?" + pm_filter + " ORDER BY month, id",
+        params
+    ).fetchall()
+
+    rows = []
+    for r in expenses:
+        rows.append({'month': r[0], 'category': r[1], 'description': r[2] or '', 'amount': r[3], 'source': 'Admin Expense'})
+    for r in dc:
+        rows.append({'month': r[0], 'category': r[1], 'description': r[2] or '', 'amount': r[3], 'source': 'Direct Cost'})
+
+    rows.sort(key=lambda x: x['month'])
+    conn.close()
+    return jsonify(rows)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=False)
